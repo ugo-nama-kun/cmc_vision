@@ -9,6 +9,7 @@ https://sites.google.com/view/data-regularized-q
 https://arxiv.org/abs/1910.01741
 - extra: SLAC (if possible)
 https://alexlee-gk.github.io/slac/
+- extra: PPO + CNN (if possible)
 
 ## Environment
 - dm_control
