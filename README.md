@@ -16,3 +16,5 @@ https://alexlee-gk.github.io/slac/
 https://github.com/deepmind/dm_control
 
 ## Package
+- dm_control
+- tensorflow v2
