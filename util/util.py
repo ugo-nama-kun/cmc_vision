@@ -225,6 +225,25 @@ def squashed_gaussian_logprob(mu, std, action, eps=1e-8):
     return logprob_squashed
 
 
+class ActionSpace:
+    def __init__(self, env_dmc):
+        self.env_dmc = env_dmc
+        self.spec = self.env_dmc.action_spec()
+
+    @property
+    def high(self):
+        return np.ones(self.spec.shape) * self.spec.maximum
+
+    @property
+    def low(self):
+        return np.ones(self.spec.shape) * self.spec.minimum
+
+    def sample(self):
+        spec = self.env_dmc.action_spec()
+        action = np.random.uniform(spec.minimum, spec.maximum, spec.shape)
+        return action
+
+
 class DMC2GymWrapper:
     def __init__(self, env_dmc, max_step=1000):
         self.env_dmc = env_dmc
@@ -250,8 +269,8 @@ class DMC2GymWrapper:
         info = {}
         return obs, r, done, info
 
-    def sample_action(self):
-        spec = self.env_dmc.action_spec()
-        action = np.random.uniform(spec.minimum, spec.maximum, spec.shape)
-        return action
+    @property
+    def action_space(self):
+        return ActionSpace(self.env_dmc)
+
 

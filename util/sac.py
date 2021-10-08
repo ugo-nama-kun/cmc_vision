@@ -5,8 +5,8 @@ import tensorflow.keras.layers as kl
 import tensorflow_probability as tfp
 
 
-from base import AgentBase
-from util import RunningStats, SimpleReplayBuffer, Experience
+from util.base import AgentBase
+from util.util import RunningStats, SimpleReplayBuffer, Experience
 
 
 class GaussianPolicy(tf.keras.Model):
@@ -22,7 +22,7 @@ class GaussianPolicy(tf.keras.Model):
         self.mu = kl.Dense(self.action_space, activation="tanh")
         self.logstd = kl.Dense(self.action_space)
 
-        self.optimizer = tf.keras.optimizers.Adam(lr=lr)
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 
     @tf.function
     def call(self, x):
@@ -70,7 +70,7 @@ class DualQNetwork(tf.keras.Model):
         self.dense_22 = kl.Dense(256, activation="relu")
         self.q2 = kl.Dense(1)
 
-        self.optimizer = tf.keras.optimizers.Adam(lr=lr)
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 
     def call(self, states, actions):
         inputs = tf.concat([states, actions], 1)
@@ -233,7 +233,7 @@ class SoftActorCriticAgent(AgentBase):
         )
 
 
-def evaluate_single_episode(test_env: gym.Env, agent: SoftActorCriticAgent):
+def evaluate_single_episode(test_env, agent: SoftActorCriticAgent):
     episode_reward = 0
     local_steps = 0
 
@@ -290,34 +290,34 @@ def training(agent, env, test_env, n_steps, evaluate_every, n_test):
 
             step_now = step if step == 0 else step + 1
             print(f" {step_now} steps average reward: {np.array(test_episode_rewards, dtype=np.float32).mean()}, std: {np.array(test_episode_rewards, dtype=np.float32).std()}")
-            log_metric("average_test_episode_reward", np.array(test_episode_rewards, dtype=np.float32).mean(), step=step_now)
+            # log_metric("average_test_episode_reward", np.array(test_episode_rewards, dtype=np.float32).mean(), step=step_now)
 
     return episode_reward, local_steps
 
-
-if __name__ == '__main__':
-    config = {
-        "env": "Pendulum-v0",
-        "algo": "sac-fnn",
-        "max_experience": 10**5,
-        "min_experiences": 512,
-        "update_period": 4,
-        "gamma": 0.99,
-        "tau": 0.005,
-        "batch_size": 256,
-    }
-
-    env = gym.make(config["env"])
-    test_env = gym.make(config["env"])
-    agent = SoftActorCriticAgent(env=env,
-                                 max_experiences=config["max_experience"],
-                                 min_experiences=config["min_experiences"],
-                                 update_period=config["update_period"],
-                                 gamma=config["gamma"],
-                                 tau=config["tau"],
-                                 batch_size=config["batch_size"])
-
-    training(agent, env, test_env, n_steps=300 * 100, evaluate_every=1000, n_test=3)
-
-
+#
+# if __name__ == '__main__':
+#     config = {
+#         "env": "Pendulum-v0",
+#         "algo": "sac-fnn",
+#         "max_experience": 10**5,
+#         "min_experiences": 512,
+#         "update_period": 4,
+#         "gamma": 0.99,
+#         "tau": 0.005,
+#         "batch_size": 256,
+#     }
+#
+#     env = gym.make(config["env"])
+#     test_env = gym.make(config["env"])
+#     agent = SoftActorCriticAgent(env=env,
+#                                  max_experiences=config["max_experience"],
+#                                  min_experiences=config["min_experiences"],
+#                                  update_period=config["update_period"],
+#                                  gamma=config["gamma"],
+#                                  tau=config["tau"],
+#                                  batch_size=config["batch_size"])
+#
+#     training(agent, env, test_env, n_steps=300 * 100, evaluate_every=1000, n_test=3)
+#
+#
 
