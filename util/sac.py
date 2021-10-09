@@ -4,6 +4,8 @@ import tensorflow as tf
 import tensorflow.keras.layers as kl
 import tensorflow_probability as tfp
 
+import wandb
+
 
 from util.base import AgentBase
 from util.util import RunningStats, SimpleReplayBuffer, Experience
@@ -291,6 +293,11 @@ def training(agent, env, test_env, n_steps, evaluate_every, n_test):
             step_now = step if step == 0 else step + 1
             print(f" {step_now} steps average reward: {np.array(test_episode_rewards, dtype=np.float32).mean()}, std: {np.array(test_episode_rewards, dtype=np.float32).std()}")
             # log_metric("average_test_episode_reward", np.array(test_episode_rewards, dtype=np.float32).mean(), step=step_now)
+            wandb.log(
+                {"maen_return": np.array(test_episode_rewards, dtype=np.float32).mean(),
+                 "std_return": np.array(test_episode_rewards, dtype=np.float32).std()},
+                step=step_now
+            )
 
     return episode_reward, local_steps
 
