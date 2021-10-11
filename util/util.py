@@ -8,8 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import tensorflow as tf
-import tensorflow.keras.layers as kl
-import tensorflow_probability as tfp
+
 import wandb
 from dm_env import StepType
 from matplotlib import animation
@@ -23,7 +22,6 @@ class RunningStats:
     """
 
     def __init__(self, shape):
-
         self.mean = np.zeros(shape, 'float64')
         self.var = np.ones(shape, 'float64')
         self.count = 0 + 1e-4
@@ -44,7 +42,6 @@ class RunningStats:
 
     @staticmethod
     def _update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
-
         delta = batch_mean - mean
         tot_count = count + batch_count
 
@@ -71,7 +68,8 @@ class SimpleReplayBuffer:
     """
     Simple Replay Buffer, assuming MDP-like state treatment
     """
-    def __init__(self, maxlen=10**6):
+
+    def __init__(self, maxlen=10 ** 6):
         self.max_len = maxlen
         self.buffer = deque(maxlen=maxlen)
         self.count = 0
@@ -115,7 +113,8 @@ class SingleTrajectoryReplayBuffer:
     A Replay Buffer, which all experience is stored as a single long trajectory
     The buffer is first-in first-out
     """
-    def __init__(self, maxlen=10**6):
+
+    def __init__(self, maxlen=10 ** 6):
         self.max_len = maxlen
         self.buffer = deque(maxlen=maxlen)
         self.count = 0
@@ -167,7 +166,7 @@ class SingleTrajectoryReplayBuffer:
         n = len(self.buffer)
 
         start_index = np.random.choice(np.arange(n - trajectory_length), replace=False)
-        selected_experiences = [self.buffer[idx] for idx in range(start_index, start_index+trajectory_length)]
+        selected_experiences = [self.buffer[idx] for idx in range(start_index, start_index + trajectory_length)]
 
         states = np.vstack(
             [exp.state for exp in selected_experiences]
@@ -192,7 +191,8 @@ class TrajectoryReplayBuffer:
     """
     Trajectory-based Replay Buffer
     """
-    def __init__(self, maxlen=10**6):
+
+    def __init__(self, maxlen=10 ** 6):
         self.max_len = maxlen
         self.buffer = deque(maxlen=maxlen)
         self.count = 0
@@ -253,13 +253,17 @@ class ActionSpace:
 
 
 class DMC2GymWrapper:
-    def __init__(self, env_dmc, max_step=1000):
+    def __init__(self, env_dmc, max_step=1000, is_vision=False, frame_stack=3, im_size=84):
         self.env_dmc = env_dmc
         self.max_step = max_step
         self._step = 0
+        self.is_vision = is_vision
+        self.frames = deque(maxlen=frame_stack)
+        self.im_size = im_size
 
     def reset(self):
         self._step = 0
+        self.frames.clear()
         time_step = self.env_dmc.reset()
         obs, r, done, info = self.get_data_from_time_step(time_step)
         return obs
@@ -271,7 +275,16 @@ class DMC2GymWrapper:
         return obs, r, done, info
 
     def get_data_from_time_step(self, time_step):
-        obs = np.concatenate(list(time_step.observation.values()))
+        if self.is_vision:
+            single_vision = self.env_dmc.physics.render(camera_id=0, height=self.im_size, width=self.im_size)
+            if len(self.frames) == 0:
+                for _ in range(self.frames.maxlen):
+                    self.frames.append(single_vision)
+            else:
+                self.frames.append(single_vision)
+            obs = np.dstack(self.frames)
+        else:
+            obs = np.concatenate(list(time_step.observation.values()))
         r = time_step.reward
         done = True if (self._step >= self.max_step or time_step.step_type is StepType.LAST) else False
         info = {}
@@ -297,7 +310,8 @@ def display_video(frames, framerate=30):
     def update(frame):
         im.set_data(frame)
         return [im]
-    interval = 1000/framerate
+
+    interval = 1000 / framerate
     anim = animation.FuncAnimation(fig=fig, func=update, frames=frames,
                                    interval=interval, blit=True, repeat=False)
     return anim
@@ -330,6 +344,7 @@ def evaluate_single_episode(test_env: DMC2GymWrapper, agent: AgentBase, record: 
         agent_infos.append(agent_info)
         env_infos.append(env_info)
 
+    video_result = None
     if record:
         anim = display_video(frames, framerate=1. / test_env.env_dmc.control_timestep())
         writervideo = animation.FFMpegWriter(fps=1. / test_env.env_dmc.control_timestep())
@@ -337,16 +352,14 @@ def evaluate_single_episode(test_env: DMC2GymWrapper, agent: AgentBase, record: 
         time_stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         anim.save(f'video/test-{time_stamp}.mp4', writer=writervideo)
 
-        wandb.log(
-            {"video": wandb.Video(f"video/test-{time_stamp}.mp4",
-                                  fps=1. / test_env.env_dmc.control_timestep(),
-                                  format="gif")})
+        video_result = wandb.Video(f"video/test-{time_stamp}.mp4",
+                                   fps=1. / test_env.env_dmc.control_timestep(),
+                                   format="mp4")
 
-    return episode_reward, local_steps, agent_infos, env_infos
+    return episode_reward, local_steps, agent_infos, env_infos, video_result
 
 
 def training(agent, env, test_env, n_steps, evaluate_every, n_test):
-
     state = env.reset()
     episode_reward = 0
     local_steps = 0
@@ -369,18 +382,24 @@ def training(agent, env, test_env, n_steps, evaluate_every, n_test):
             state = next_state
 
         if step == 0 or (step + 1) % evaluate_every == 0:
+            video_test = None
             test_episode_rewards = []
             for n in range(n_test):
-                test_episode_reward, test_local_steps, agent_infos, env_infos = evaluate_single_episode(
-                    test_env=test_env, agent=agent, record=n==0)
+                test_episode_reward, test_local_steps, agent_infos, env_infos, video_result = evaluate_single_episode(
+                    test_env=test_env, agent=agent, record=n == 0)
                 test_episode_rewards.append(test_episode_reward)
 
+                if video_result:
+                    video_test = video_result
+
             step_now = step if step == 0 else step + 1
-            print(f" {step_now} steps average reward: {np.array(test_episode_rewards, dtype=np.float32).mean()}, std: {np.array(test_episode_rewards, dtype=np.float32).std()}")
-            # log_metric("average_test_episode_reward", np.array(test_episode_rewards, dtype=np.float32).mean(), step=step_now)
+            print(
+                f" {step_now} steps average reward: {np.array(test_episode_rewards, dtype=np.float32).mean()}, std: {np.array(test_episode_rewards, dtype=np.float32).std()}")
+
             wandb.log(
-                {"maen_return": np.array(test_episode_rewards, dtype=np.float32).mean(),
-                 "std_return": np.array(test_episode_rewards, dtype=np.float32).std()},
+                {"average_return": np.array(test_episode_rewards, dtype=np.float32).mean(),
+                 "std_return": np.array(test_episode_rewards, dtype=np.float32).std(),
+                 "video": video_test},
                 step=step_now
             )
 
