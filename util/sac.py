@@ -230,101 +230,11 @@ class SoftActorCriticAgent(AgentBase):
 
         # Soft target update
         self._target_dualqnet.set_weights(
-            (1 - self.tau) * np.array(self._target_dualqnet.get_weights())
-            + self.tau * np.array(self._dualqnet.get_weights())
+            (1 - self.tau) * np.array(self._target_dualqnet.get_weights(), dtype="object")
+            + self.tau * np.array(self._dualqnet.get_weights(), dtype="object")
         )
 
 
-def evaluate_single_episode(test_env, agent: SoftActorCriticAgent):
-    episode_reward = 0
-    local_steps = 0
-
-    agent_infos = []
-    env_infos = []
-
-    done = False
-    obs = test_env.reset()
-    while not done:
-        action, agent_info = agent.sample_action(np.atleast_2d(obs), frozen=True)
-
-        next_obs, reward, done, env_info = test_env.step(action)
-        agent.update(obs, action, reward, next_obs, done, frozen=True)
-
-        obs = next_obs
-        episode_reward += reward
-
-        local_steps += 1
-        agent_infos.append(agent_info)
-        env_infos.append(env_info)
-
-    return episode_reward, local_steps, agent_infos, env_infos
 
 
-def training(agent, env, test_env, n_steps, evaluate_every, n_test):
-
-    state = env.reset()
-    episode_reward = 0
-    local_steps = 0
-    for step in range(n_steps):
-
-        action, _ = agent.sample_action(np.atleast_2d(state))
-
-        next_state, reward, done, _ = env.step(action)
-
-        agent.update(state, action, reward, next_state, done)
-
-        episode_reward += reward
-        local_steps += 1
-
-        if done:
-            episode_reward = 0
-            local_steps = 0
-            state = env.reset()
-        else:
-            state = next_state
-
-        if step == 0 or (step + 1) % evaluate_every == 0:
-            test_episode_rewards = []
-            for _ in range(n_test):
-                test_episode_reward, test_local_steps, agent_infos, env_infos = evaluate_single_episode(
-                    test_env=test_env, agent=agent)
-                test_episode_rewards.append(test_episode_reward)
-
-            step_now = step if step == 0 else step + 1
-            print(f" {step_now} steps average reward: {np.array(test_episode_rewards, dtype=np.float32).mean()}, std: {np.array(test_episode_rewards, dtype=np.float32).std()}")
-            # log_metric("average_test_episode_reward", np.array(test_episode_rewards, dtype=np.float32).mean(), step=step_now)
-            wandb.log(
-                {"maen_return": np.array(test_episode_rewards, dtype=np.float32).mean(),
-                 "std_return": np.array(test_episode_rewards, dtype=np.float32).std()},
-                step=step_now
-            )
-
-    return episode_reward, local_steps
-
-#
-# if __name__ == '__main__':
-#     config = {
-#         "env": "Pendulum-v0",
-#         "algo": "sac-fnn",
-#         "max_experience": 10**5,
-#         "min_experiences": 512,
-#         "update_period": 4,
-#         "gamma": 0.99,
-#         "tau": 0.005,
-#         "batch_size": 256,
-#     }
-#
-#     env = gym.make(config["env"])
-#     test_env = gym.make(config["env"])
-#     agent = SoftActorCriticAgent(env=env,
-#                                  max_experiences=config["max_experience"],
-#                                  min_experiences=config["min_experiences"],
-#                                  update_period=config["update_period"],
-#                                  gamma=config["gamma"],
-#                                  tau=config["tau"],
-#                                  batch_size=config["batch_size"])
-#
-#     training(agent, env, test_env, n_steps=300 * 100, evaluate_every=1000, n_test=3)
-#
-#
 

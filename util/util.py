@@ -1,12 +1,20 @@
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
+
+import matplotlib
+import matplotlib.pyplot as plt
 
 import numpy as np
 
 import tensorflow as tf
 import tensorflow.keras.layers as kl
 import tensorflow_probability as tfp
+import wandb
 from dm_env import StepType
+from matplotlib import animation
+
+from util.base import AgentBase
 
 
 class RunningStats:
@@ -274,3 +282,106 @@ class DMC2GymWrapper:
         return ActionSpace(self.env_dmc)
 
 
+def display_video(frames, framerate=30):
+    height, width, _ = frames[0].shape
+    dpi = 70
+    orig_backend = matplotlib.get_backend()
+    matplotlib.use('Agg')  # Switch to headless 'Agg' to inhibit figure rendering.
+    fig, ax = plt.subplots(1, 1, figsize=(width / dpi, height / dpi), dpi=dpi)
+    matplotlib.use(orig_backend)  # Switch back to the original backend.
+    ax.set_axis_off()
+    ax.set_aspect('equal')
+    ax.set_position([0, 0, 1, 1])
+    im = ax.imshow(frames[0])
+
+    def update(frame):
+        im.set_data(frame)
+        return [im]
+    interval = 1000/framerate
+    anim = animation.FuncAnimation(fig=fig, func=update, frames=frames,
+                                   interval=interval, blit=True, repeat=False)
+    return anim
+
+
+def evaluate_single_episode(test_env: DMC2GymWrapper, agent: AgentBase, record: bool):
+    episode_reward = 0
+    local_steps = 0
+
+    agent_infos = []
+    env_infos = []
+    frames = []
+
+    done = False
+    obs = test_env.reset()
+    while not done:
+        action, agent_info = agent.sample_action(np.atleast_2d(obs), frozen=True)
+
+        next_obs, reward, done, env_info = test_env.step(action)
+        agent.update(obs, action, reward, next_obs, done, frozen=True)
+
+        if record:
+            camera1 = test_env.env_dmc.physics.render(camera_id=1, height=200, width=200)
+            frames.append(camera1)
+
+        obs = next_obs
+        episode_reward += reward
+
+        local_steps += 1
+        agent_infos.append(agent_info)
+        env_infos.append(env_info)
+
+    if record:
+        anim = display_video(frames, framerate=1. / test_env.env_dmc.control_timestep())
+        writervideo = animation.FFMpegWriter(fps=1. / test_env.env_dmc.control_timestep())
+
+        time_stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        anim.save(f'video/test-{time_stamp}.mp4', writer=writervideo)
+
+        wandb.log(
+            {"video": wandb.Video(f"video/test-{time_stamp}.mp4",
+                                  fps=1. / test_env.env_dmc.control_timestep(),
+                                  format="gif")})
+
+    return episode_reward, local_steps, agent_infos, env_infos
+
+
+def training(agent, env, test_env, n_steps, evaluate_every, n_test):
+
+    state = env.reset()
+    episode_reward = 0
+    local_steps = 0
+    for step in range(n_steps):
+
+        action, _ = agent.sample_action(np.atleast_2d(state))
+
+        next_state, reward, done, _ = env.step(action)
+
+        agent.update(state, action, reward, next_state, done)
+
+        episode_reward += reward
+        local_steps += 1
+
+        if done:
+            episode_reward = 0
+            local_steps = 0
+            state = env.reset()
+        else:
+            state = next_state
+
+        if step == 0 or (step + 1) % evaluate_every == 0:
+            test_episode_rewards = []
+            for n in range(n_test):
+                test_episode_reward, test_local_steps, agent_infos, env_infos = evaluate_single_episode(
+                    test_env=test_env, agent=agent, record=n==0)
+                test_episode_rewards.append(test_episode_reward)
+
+            step_now = step if step == 0 else step + 1
+            print(f" {step_now} steps average reward: {np.array(test_episode_rewards, dtype=np.float32).mean()}, std: {np.array(test_episode_rewards, dtype=np.float32).std()}")
+            # log_metric("average_test_episode_reward", np.array(test_episode_rewards, dtype=np.float32).mean(), step=step_now)
+            wandb.log(
+                {"maen_return": np.array(test_episode_rewards, dtype=np.float32).mean(),
+                 "std_return": np.array(test_episode_rewards, dtype=np.float32).std()},
+                step=step_now
+            )
+
+    return episode_reward, local_steps

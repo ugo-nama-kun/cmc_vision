@@ -1,13 +1,17 @@
 import wandb
 from dm_control import suite
 
-from util.sac import SoftActorCriticAgent, training
-from util.util import DMC2GymWrapper
+from util.sac import SoftActorCriticAgent
+from util.util import DMC2GymWrapper, training
 
-project_name = 'cmc_dmc_vision'
-entity = 'ugo-nama-kun'
+# Experiment Params
+n_steps = 10 ** 6
+evaluate_every = 10000
+n_test = 5
+
+env_id = ["cartpole", "balance"]
 config_experiment = {
-    "env": ["cartpole", "balance"],
+    "env": env_id,
     "algo": "sac-fnn",
     "max_experience": 10 ** 6,
     "min_experiences": 512,
@@ -17,7 +21,16 @@ config_experiment = {
     "batch_size": 256,
 }
 
-wandb.init(project=project_name, entity=entity)
+#########################################
+# Main content
+#########################################
+
+project_name = 'cmc_dmc_vision'
+entity = 'ugo-nama-kun'
+
+wandb.init(project=project_name,
+           entity=entity,
+           group=config_experiment["env"][0])
 
 
 def make_dmc_gym_env():
@@ -39,6 +52,6 @@ agent = SoftActorCriticAgent(env=env,
                              tau=config_experiment["tau"],
                              batch_size=config_experiment["batch_size"])
 
-training(agent, env, test_env, n_steps=3 * 10**6, evaluate_every=1000, n_test=3)
+training(agent, env, test_env, n_steps=n_steps, evaluate_every=evaluate_every, n_test=n_test)
 
 print("done.")
