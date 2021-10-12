@@ -108,6 +108,50 @@ class SimpleReplayBuffer:
         return states, actions, rewards, next_states, dones
 
 
+class SimpleReplayBufferPixel:
+    """
+    Simple Pixel Replay Buffer, assuming MDP-like state treatment
+    """
+
+    def __init__(self, maxlen=10 ** 6):
+        self.max_len = maxlen
+        self.buffer = deque(maxlen=maxlen)
+        self.count = 0
+
+    def __len__(self):
+        return len(self.buffer)
+
+    def push(self, exp):
+        self.buffer.append(exp)
+        self.count += 1
+
+    def get_minibatch(self, batch_size):
+        n = len(self.buffer)
+
+        indices = np.random.choice(
+            np.arange(n), replace=False, size=batch_size)
+
+        selected_experiences = [self.buffer[idx] for idx in indices]
+
+        states = np.array(
+            [exp.state for exp in selected_experiences]
+        ).astype(np.float32)
+
+        actions = np.vstack(
+            [exp.action for exp in selected_experiences]).astype(np.float32)
+
+        rewards = np.vstack(
+            [exp.reward for exp in selected_experiences]).reshape(-1, 1)
+
+        next_states = np.array(
+            [exp.next_state for exp in selected_experiences]).astype(np.float32)
+
+        dones = np.vstack(
+            [exp.done for exp in selected_experiences]).reshape(-1, 1)
+
+        return states, actions, rewards, next_states, dones
+
+
 class SingleTrajectoryReplayBuffer:
     """
     A Replay Buffer, which all experience is stored as a single long trajectory

@@ -8,8 +8,7 @@ from util.sac_raw import SoftActorCriticAgentRawPixel
 from util.util import DMC2GymWrapper, training
 
 # Trial params
-agent_type = "lowdim"
-
+agent_type = "raw_pixel"
 
 # Experiment Params
 n_steps = 10 ** 6
@@ -21,12 +20,12 @@ env_id = ["cartpole", "balance"]
 config_experiment = {
     "env": env_id,
     "algo": "sac-fnn",
-    "max_experience": 10 ** 6,
-    "min_experiences": 512,
-    "update_period": 5,
+    "max_experience": 10 ** 5,
+    "min_experiences": 1000,
+    "update_period": 2,
     "gamma": 0.99,
     "tau": 0.01,
-    "batch_size": 256,
+    "batch_size": 512,
 }
 
 running_name = None
@@ -52,6 +51,8 @@ wandb.init(project=project_name,
            entity=entity,
            group=config_experiment["env"][0],
            name=running_name)
+config = wandb.config
+config.update(config)
 
 
 def make_dmc_gym_env(is_vision):
@@ -59,19 +60,27 @@ def make_dmc_gym_env(is_vision):
     return DMC2GymWrapper(env_dmc, max_step=1000, is_vision=is_vision, im_size=84, frame_stack=3)
 
 
-config = wandb.config
-config.update(config)
-
 env = make_dmc_gym_env(is_vision)
 test_env = make_dmc_gym_env(is_vision)
 
-agent = SoftActorCriticAgent(env=env,
-                             max_experiences=config_experiment["max_experience"],
-                             min_experiences=config_experiment["min_experiences"],
-                             update_period=config_experiment["update_period"],
-                             gamma=config_experiment["gamma"],
-                             tau=config_experiment["tau"],
-                             batch_size=config_experiment["batch_size"])
+if agent_type == "lowdim":
+    agent = SoftActorCriticAgent(env=env,
+                                 max_experiences=config_experiment["max_experience"],
+                                 min_experiences=config_experiment["min_experiences"],
+                                 update_period=config_experiment["update_period"],
+                                 gamma=config_experiment["gamma"],
+                                 tau=config_experiment["tau"],
+                                 batch_size=config_experiment["batch_size"])
+elif agent_type == "raw_pixel":
+    agent = SoftActorCriticAgentRawPixel(env=env,
+                                         max_experiences=config_experiment["max_experience"],
+                                         min_experiences=config_experiment["min_experiences"],
+                                         update_period=config_experiment["update_period"],
+                                         gamma=config_experiment["gamma"],
+                                         tau=config_experiment["tau"],
+                                         batch_size=config_experiment["batch_size"])
+else:
+    raise ValueError("invalid agent type")
 
 training(agent, env, test_env, n_steps=n_steps, evaluate_every=evaluate_every, n_test=n_test)
 

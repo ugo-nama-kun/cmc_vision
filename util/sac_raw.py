@@ -2,46 +2,30 @@ import numpy as np
 
 import tensorflow as tf
 import tensorflow.keras.layers as kl
+from keras import Sequential
 from tensorflow.keras import activations
 
 
 from util.base import AgentBase
-from util.util import RunningStats, SimpleReplayBuffer, Experience
+from util.util import Experience, SimpleReplayBufferPixel
 
 
 class Encoder(tf.keras.Model):
-    def __init__(self, latent_size, n_channel):
+    def __init__(self):
         super(Encoder, self).__init__()
-        self.latent_size = latent_size
 
-        self.conv1 = kl.Conv2D(32,
-                               (3, 3),
-                               strides=2,
-                               activation="relu")
-        self.conv2 = kl.Conv2D(32,
-                               (3, 3),
-                               strides=1,
-                               activation="relu")
-        self.conv3 = kl.Conv2D(32,
-                               (3, 3),
-                               strides=1,
-                               activation="relu")
-        self.conv4 = kl.Conv2D(32,
-                               (3, 3),
-                               strides=1,
-                               activation="relu")
-        self.embed = kl.Dense(50, activation=activations.linear)
-        self.final_act = kl.Activation(activation=activations.tanh)
+        self.model = Sequential()
+        self.model.add(kl.Conv2D(32, (3, 3), strides=2, activation="relu"))
+        self.model.add(kl.Conv2D(32, (3, 3), strides=1, activation="relu"))
+        self.model.add(kl.Conv2D(32, (3, 3), strides=1, activation="relu"))
+        self.model.add(kl.Conv2D(32, (3, 3), strides=1, activation="relu"))
+        self.model.add(kl.Flatten())
+        self.model.add(kl.Dense(50, activation=activations.linear))
+        self.model.add(kl.Activation(activation=activations.tanh))
 
     @tf.function
     def call(self, x):
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-        x = self.embed(x)
-        x = kl.LayerNormalization(x)
-        x = self.final_act(x)
+        x = self.model(x)
         return x
 
 
@@ -121,7 +105,7 @@ class DualQNetwork(tf.keras.Model):
 
 
 class SoftActorCriticAgentRawPixel(AgentBase):
-    def __init__(self, env, model_policy=GaussianPolicy, model_dual_qnet=DualQNetwork, max_experiences=10 ** 6,
+    def __init__(self, env, max_experiences=10 ** 6,
                  min_experiences=512, update_period=4, gamma=0.99, tau=0.005, batch_size=256):
         super().__init__(env)
         self.max_experiences = max_experiences
@@ -132,16 +116,15 @@ class SoftActorCriticAgentRawPixel(AgentBase):
         self.batch_size = batch_size
 
         # Initialize State-Action Scaler
-        dummy_obs = env.reset()
-        self.obs_normalizer = RunningStats(shape=dummy_obs.shape)
         self.scale_action = (env.action_space.high - env.action_space.low) / 2.
 
-        self.replay_buffer = SimpleReplayBuffer(maxlen=self.max_experiences)
+        self.replay_buffer = SimpleReplayBufferPixel(maxlen=self.max_experiences)
 
         # Models
-        self._policy = model_policy(action_space=len(self.scale_action))
-        self._dualqnet = model_dual_qnet()
-        self._target_dualqnet = model_dual_qnet()
+        self._encoder = Encoder()
+        self._policy = GaussianPolicy(action_space=len(self.scale_action))
+        self._dualqnet = DualQNetwork()
+        self._target_dualqnet = DualQNetwork()
 
         self.log_alpha = tf.Variable(0.)
         self.alpha_optimizer = tf.keras.optimizers.Adam(3e-4)
@@ -152,30 +135,33 @@ class SoftActorCriticAgentRawPixel(AgentBase):
         self._init(env)
 
     def _init(self, env):
-        dummy_state = env.reset()
-        dummy_state = (dummy_state[np.newaxis, ...]).astype(np.float32)
+        dummy_obs = env.reset()
+        dummy_obs = (dummy_obs[np.newaxis, ...]).astype(np.float32)
 
         dummy_action = env.action_space.sample()
         dummy_action = (dummy_action[np.newaxis, ...]).astype(np.float32)
 
         # Initialize network shapes by a run
-        self._policy(dummy_state)
-        self._dualqnet(dummy_state, dummy_action)
-        self._target_dualqnet(dummy_state, dummy_action)
+        latent = self._encoder(dummy_obs)
+        self._policy(latent)
+        self._dualqnet(latent, dummy_action)
+        self._target_dualqnet(latent, dummy_action)
         self._target_dualqnet.set_weights(self._dualqnet.get_weights())
 
     def _preprocess(self, observations, frozen=False):
-
-        if not frozen:
-            self.obs_normalizer.update(observations)
-
-        return self.obs_normalizer.normalize(observations)
+        return observations / 255.
 
     def sample_action(self, observation, frozen=False):
 
         observation = self._preprocess(observation, frozen=frozen)
 
-        action, _ = self._policy.sample_action(np.atleast_2d(observation))
+        if len(observation.shape) < 4:
+            observation = np.expand_dims(observation, axis=0)
+
+        assert len(observation.shape) == 4
+
+        latent = self._encoder((observation))
+        action, _ = self._policy.sample_action(latent)
         action = action.numpy()[0]
 
         info = {
@@ -188,7 +174,10 @@ class SoftActorCriticAgentRawPixel(AgentBase):
 
         observations = self._preprocess(observations, frozen=frozen)
 
-        actions, _ = self._policy.sample_action(np.atleast_2d(observations))
+        assert len(observations.shape) == 4
+
+        latents = self._encoder(np.atleast_2d(observations))
+        actions, _ = self._policy.sample_action(latents)
         actions = actions.numpy()
 
         info = {
@@ -215,25 +204,23 @@ class SoftActorCriticAgentRawPixel(AgentBase):
     def update_params(self):
         # update rules of the networks and alpha
 
-        states, actions, rewards, next_states, dones = self.replay_buffer.get_minibatch(self.batch_size)
-
-        # Normalize observations
-        states = self.obs_normalizer.normalize(states)
-        next_states = self.obs_normalizer.normalize(next_states)
+        obss, actions, rewards, next_obss, dones = self.replay_buffer.get_minibatch(self.batch_size)
 
         # Get alpha
         alpha = tf.math.exp(self.log_alpha)
 
         # Update Q function
-        next_actions, next_logprobs = self._policy.sample_action(next_states)
+        next_latents = self._encoder(next_obss)
+        next_actions, next_logprobs = self._policy.sample_action(next_latents)
 
-        target_q1, target_q2 = self._target_dualqnet(next_states, next_actions)
+        target_q1, target_q2 = self._target_dualqnet(next_latents, next_actions)
 
         target = rewards + (1 - dones) * self.gamma * (
                 tf.minimum(target_q1, target_q2) + -1 * alpha * next_logprobs
         )
         with tf.GradientTape() as tape:
-            q1, q2 = self._dualqnet(states, actions)
+            latents = self._encoder(obss)
+            q1, q2 = self._dualqnet(latents, actions)
             loss_1 = tf.reduce_mean(tf.square(target - q1))
             loss_2 = tf.reduce_mean(tf.square(target - q2))
             loss = 0.5 * loss_1 + 0.5 * loss_2
@@ -243,9 +230,10 @@ class SoftActorCriticAgentRawPixel(AgentBase):
         self._dualqnet.optimizer.apply_gradients(zip(grads, variables))
 
         # Update policy
+        latents = self._encoder(obss)  # redundant?
         with tf.GradientTape() as tape:
-            selected_actions, logprobs = self._policy.sample_action(states)
-            q1, q2 = self._dualqnet(states, selected_actions)
+            selected_actions, logprobs = self._policy.sample_action(latents)
+            q1, q2 = self._dualqnet(latents, selected_actions)
             q_min = tf.minimum(q1, q2)
             loss = -1 * tf.reduce_mean(q_min + -1 * alpha * logprobs)
 
