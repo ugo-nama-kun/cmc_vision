@@ -1,6 +1,8 @@
 from datetime import datetime
 
 import wandb
+import tensorflow as tf
+
 from dm_control import suite
 
 from util.sac import SoftActorCriticAgent
@@ -9,6 +11,7 @@ from util.util import DMC2GymWrapper, training
 
 # Trial params
 agent_type = "raw_pixel"
+gpu_id = 0
 
 # Experiment Params
 n_steps = 10 ** 6
@@ -43,6 +46,16 @@ if running_name is None:
 #########################################
 # Main content
 #########################################
+
+available_gpus = tf.config.experimental.list_physical_devices('GPU')
+print("Num GPUs Available: ", len(available_gpus))
+if available_gpus:
+    try:
+        tf.config.experimental.set_visible_devices(available_gpus[gpu_id], "GPU")
+        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+        print(len(available_gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+    except RuntimeError as e:
+        print(e)
 
 project_name = 'cmc_dmc_vision'
 entity = 'ugo-nama-kun'
