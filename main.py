@@ -1,4 +1,5 @@
 from datetime import datetime
+import argparse
 
 import wandb
 import tensorflow as tf
@@ -9,8 +10,48 @@ from util.sac import SoftActorCriticAgent
 from util.sac_raw import SoftActorCriticAgentRawPixel
 from util.util import DMC2GymWrapper, training
 
+
+parser = argparse.ArgumentParser(description="Pixel Agent RL")
+
+parser.add_argument("agent_type", help="agent type: [lowdim, raw_pixel]", type=str)
+parser.add_argument("--gpu", help="GPU ID if available", default=0, type=int)
+parser.add_argument("--domain", help="environment (domain) name, like cartpole", default="cartpole", type=str)
+parser.add_argument("--task", help="task option, like balance", default="balance", type=str)
+""" domain-task names
+acrobot swingup
+acrobot swingup_sparse
+ball_in_cup catch
+cartpole balance
+cartpole balance_sparse
+cartpole swingup
+cartpole swingup_sparse
+cheetah run
+finger spin
+finger turn_easy
+finger turn_hard
+fish upright
+fish swim
+hopper stand
+hopper hop
+humanoid stand
+humanoid walk
+humanoid run
+manipulator bring_ball
+pendulum swingup
+point_mass easy
+reacher easy
+reacher hard
+swimmer swimmer6
+swimmer swimmer15
+walker stand
+walker walk
+walker run
+"""
+
+args = parser.parse_args()
+
 # Trial params
-agent_type = "raw_pixel"
+agent_type = args.agent_type
 gpu_id = 0
 
 # Experiment Params
@@ -18,7 +59,7 @@ n_steps = 10 ** 6
 evaluate_every = 3000
 n_test = 5
 
-env_id = ["cartpole", "balance"]
+env_id = [args.domain, args.task]
 
 config_experiment = {
     "env": env_id,
@@ -68,8 +109,11 @@ config = wandb.config
 config.update(config)
 
 
+print(f"domain: {args.domain}, task: {args.task}, agent_type: {args.agent_type}")
+
+
 def make_dmc_gym_env(is_vision):
-    env_dmc = suite.load("cartpole", "balance")
+    env_dmc = suite.load(args.domain, args.task)
     return DMC2GymWrapper(env_dmc, max_step=1000, is_vision=is_vision, im_size=84, frame_stack=3)
 
 
