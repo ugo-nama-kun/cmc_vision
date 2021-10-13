@@ -1,14 +1,11 @@
 from copy import deepcopy
 from datetime import datetime
-from typing import Union
 
 import numpy as np
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import wandb
 
 from util.base import AgentBase
 from util.util import RunningStats, SimpleReplayBuffer, Experience
@@ -264,6 +261,3 @@ class SoftActorCriticAgent(AgentBase):
             "target_dualqnet": self._target_dualqnet.state_dict(),
             "policy": self.policy.state_dict(),
         }, f"checkpoints/model.pth")
-
-
-
