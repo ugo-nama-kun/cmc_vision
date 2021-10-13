@@ -4,14 +4,12 @@ from datetime import datetime
 
 import matplotlib
 import matplotlib.pyplot as plt
+import torch
+from matplotlib import animation
 
 import numpy as np
-
-import tensorflow as tf
-
 import wandb
 from dm_env import StepType
-from matplotlib import animation
 
 from util.base import AgentBase
 
@@ -22,11 +20,11 @@ class RunningStats:
     """
 
     def __init__(self, shape):
-        self.mean = np.zeros(shape, 'float64')
-        self.var = np.ones(shape, 'float64')
+        self.mean = np.zeros(shape, 'float32')
+        self.var = np.ones(shape, 'float32')
         self.count = 0 + 1e-4
 
-    def update(self, x):
+    def update(self, x: np.ndarray):
         batch_mean = np.mean(x, axis=0)
         batch_var = np.var(x, axis=0)
         batch_count = x.shape[0]
@@ -36,9 +34,9 @@ class RunningStats:
         self.mean, self.var, self.count = self._update_mean_var_count_from_moments(
             self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
 
-    def normalize(self, x, eps=1e-8):
+    def normalize(self, x: np.ndarray, eps=1e-8):
         normalized = (x - self.mean) / np.sqrt(self.var + eps)
-        return normalized
+        return normalized.astype(np.float32)
 
     @staticmethod
     def _update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
@@ -89,21 +87,15 @@ class SimpleReplayBuffer:
 
         selected_experiences = [self.buffer[idx] for idx in indices]
 
-        states = np.vstack(
-            [exp.state for exp in selected_experiences]
-        ).astype(np.float32)
+        states = np.vstack([exp.state for exp in selected_experiences])
 
-        actions = np.vstack(
-            [exp.action for exp in selected_experiences]).astype(np.float32)
+        actions = np.vstack([exp.action for exp in selected_experiences])
 
-        rewards = np.vstack(
-            [exp.reward for exp in selected_experiences]).reshape(-1, 1)
+        rewards = np.vstack([exp.reward for exp in selected_experiences]).reshape(-1, 1)
 
-        next_states = np.vstack(
-            [exp.next_state for exp in selected_experiences]).astype(np.float32)
+        next_states = np.vstack([exp.next_state for exp in selected_experiences])
 
-        dones = np.vstack(
-            [exp.done for exp in selected_experiences]).reshape(-1, 1)
+        dones = np.vstack([exp.done for exp in selected_experiences]).reshape(-1, 1)
 
         return states, actions, rewards, next_states, dones
 
@@ -133,21 +125,15 @@ class SimpleReplayBufferPixel:
 
         selected_experiences = [self.buffer[idx] for idx in indices]
 
-        states = np.array(
-            [exp.state for exp in selected_experiences]
-        ).astype(np.float32)
+        states = np.array([exp.state for exp in selected_experiences])
 
-        actions = np.vstack(
-            [exp.action for exp in selected_experiences]).astype(np.float32)
+        actions = np.vstack([exp.action for exp in selected_experiences])
 
-        rewards = np.vstack(
-            [exp.reward for exp in selected_experiences]).reshape(-1, 1)
+        rewards = np.vstack([exp.reward for exp in selected_experiences]).reshape(-1, 1)
 
-        next_states = np.array(
-            [exp.next_state for exp in selected_experiences]).astype(np.float32)
+        next_states = np.array([exp.next_state for exp in selected_experiences])
 
-        dones = np.vstack(
-            [exp.done for exp in selected_experiences]).reshape(-1, 1)
+        dones = np.vstack([exp.done for exp in selected_experiences]).reshape(-1, 1)
 
         return states, actions, rewards, next_states, dones
 
@@ -183,21 +169,15 @@ class SingleTrajectoryReplayBuffer:
 
         selected_experiences = [self.buffer[idx] for idx in indices]
 
-        states = np.vstack(
-            [exp.state for exp in selected_experiences]
-        ).astype(np.float32)
+        states = np.vstack([exp.state for exp in selected_experiences])
 
-        actions = np.vstack(
-            [exp.action for exp in selected_experiences]).astype(np.float32)
+        actions = np.vstack([exp.action for exp in selected_experiences])
 
-        rewards = np.vstack(
-            [exp.reward for exp in selected_experiences]).reshape(-1, 1)
+        rewards = np.vstack([exp.reward for exp in selected_experiences]).reshape(-1, 1)
 
-        next_states = np.vstack(
-            [exp.next_state for exp in selected_experiences]).astype(np.float32)
+        next_states = np.vstack([exp.next_state for exp in selected_experiences])
 
-        dones = np.vstack(
-            [exp.done for exp in selected_experiences]).reshape(-1, 1)
+        dones = np.vstack([exp.done for exp in selected_experiences]).reshape(-1, 1)
 
         return states, actions, rewards, next_states, dones
 
@@ -256,25 +236,6 @@ class TrajectoryReplayBuffer:
 
         trajectories = [self.buffer[idx] for idx in indices]
         return trajectories
-
-
-@tf.function
-def squashed_gaussian_logprob(mu, std, action, eps=1e-8):
-    """
-    Normalized Gaussian action log probability: squashed_action = tanh(action), action ~ Gaussian(mu, std**2)
-    :param mu:
-    :param std:
-    :param action:
-    :param eps:
-    :return:
-    """
-    logprob = -0.5 * np.log(2 * np.pi)
-    logprob += - tf.math.log(std + eps)
-    logprob += - 0.5 * tf.square((action - mu) / (std + eps))
-    logprob = tf.reduce_sum(logprob, axis=1, keepdims=True)
-    logprob_squashed = logprob - tf.reduce_sum(
-        tf.math.log(1 - tf.tanh(action) ** 2 + eps), axis=1, keepdims=True)
-    return logprob_squashed
 
 
 class ActionSpace:
