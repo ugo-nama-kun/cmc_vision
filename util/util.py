@@ -364,7 +364,7 @@ def evaluate_single_episode(test_env: DMC2GymWrapper, agent: AgentBase, record: 
     return episode_reward, local_steps, agent_infos, env_infos, video_result
 
 
-def training(agent, env, test_env, n_steps, evaluate_every, n_test):
+def training(agent, env, test_env, n_steps, evaluate_every, n_test, record: bool):
     state = env.reset()
     episode_reward = 0
     local_steps = 0
@@ -374,7 +374,7 @@ def training(agent, env, test_env, n_steps, evaluate_every, n_test):
 
         next_state, reward, done, _ = env.step(action)
 
-        agent.update(state, action, reward, next_state, done)
+        loss_critic, loss_actor = agent.update(state, action, reward, next_state, done)
 
         episode_reward += reward
         local_steps += 1
@@ -387,24 +387,27 @@ def training(agent, env, test_env, n_steps, evaluate_every, n_test):
             state = next_state
 
         if step == 0 or (step + 1) % evaluate_every == 0:
-            video_test = None
+            video_result = None
             test_episode_rewards = []
             for n in range(n_test):
                 test_episode_reward, test_local_steps, agent_infos, env_infos, video_result = evaluate_single_episode(
-                    test_env=test_env, agent=agent, record=n == 0)
+                    test_env=test_env, agent=agent, record=n == 0 and record)
                 test_episode_rewards.append(test_episode_reward)
-
-                if video_result:
-                    video_test = video_result
 
             step_now = step if step == 0 else step + 1
             print(
-                f" {step_now} steps average reward: {np.array(test_episode_rewards, dtype=np.float32).mean()}, std: {np.array(test_episode_rewards, dtype=np.float32).std()}")
+                f" {step_now} steps average reward: {np.array(test_episode_rewards, dtype=np.float32).mean()}, std: {np.array(test_episode_rewards, dtype=np.float32).std()}, lc_now: {loss_critic}, la_now: {loss_actor}"
+            )
+
+            log_data = {"average_return": np.array(test_episode_rewards, dtype=np.float32).mean(),
+                        "std_return": np.array(test_episode_rewards, dtype=np.float32).std(),
+                        "loss_c": loss_critic if loss_critic else 0,
+                        "loss_a": loss_actor if loss_actor else 0}
+            if record:
+                log_data.update({"video", video_result})
 
             wandb.log(
-                {"average_return": np.array(test_episode_rewards, dtype=np.float32).mean(),
-                 "std_return": np.array(test_episode_rewards, dtype=np.float32).std(),
-                 "video": video_test},
+                log_data,
                 step=step_now
             )
 

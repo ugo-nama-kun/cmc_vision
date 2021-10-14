@@ -84,7 +84,7 @@ class GaussianPolicy(nn.Module):
         return action * self.action_bound
 
     def _compute_logprob(self, means, stdevs, actions):
-        logprob = -0.5 + np.log(2 * np.pi)
+        logprob = -0.5 * np.log(2 * np.pi)
         logprob += - torch.log(stdevs)
         logprob += -0.5 * torch.square((actions - means) / stdevs)
         logprob = torch.sum(logprob, dim=1, keepdim=True)
@@ -128,7 +128,7 @@ class DualQNetwork(nn.Module):
         return q1, q2
 
 
-class SoftActorCriticAgent(AgentBase):
+class SoftActorCriticAgentRawPixel(AgentBase):
     def __init__(self, env, max_experiences=10 ** 6,
                  min_experiences=512, update_period=4, gamma=0.99, tau=0.005, batch_size=256, lr=1e-4):
         super().__init__(env)
@@ -261,12 +261,11 @@ class SoftActorCriticAgent(AgentBase):
         latents = latents.detach()
         selected_actions, logprobs = self._policy.sample_action(latents)
 
-        with torch.no_grad():
-            q1, q2 = self._dualqnet(latents, selected_actions)
-            q_min = torch.min(q1, q2)
+        q1, q2 = self._dualqnet(latents, selected_actions)
+        q_min = torch.min(q1, q2)
 
-        loss_samples = torch.sum(q_min - alpha * logprobs, -1)
-        loss_policy = - torch.mean(loss_samples)
+        loss_samples = torch.sum(alpha * logprobs - q_min, -1)
+        loss_policy = torch.mean(loss_samples)
 
         self._policy.optimizer.zero_grad()
         loss_policy.backward()

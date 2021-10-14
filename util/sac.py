@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime
+from typing import Tuple
 
 import numpy as np
 
@@ -15,7 +16,7 @@ class GaussianPolicy(nn.Module):
     def __init__(self, action_space, action_bound, state_space, lr=3e-4):
         super(GaussianPolicy, self).__init__()
         self.action_space = action_space
-        self.action_bound = action_bound
+        self.action_bound = torch.tensor(action_bound, dtype=torch.float32)
 
         self.fc1 = nn.Linear(state_space, 256)
         self.fc2 = nn.Linear(256, 256)
@@ -39,11 +40,10 @@ class GaussianPolicy(nn.Module):
         noise = torch.randn_like(mu)
 
         actions = mu + std * noise
-        actions_squashed = torch.tanh(actions).detach().numpy()
+        actions_squashed = torch.tanh(actions)
 
         logprob = self._compute_logprob(mu, std, actions)
-        # what is this process?
-        logprob_squashed = logprob - torch.sum(torch.log(1 - torch.tanh(actions)**2), dim=1, keepdim=True)
+        logprob_squashed = logprob - torch.sum(torch.log(1 - actions_squashed**2 + 1e-6), dim=1, keepdim=True)
 
         actions_squashed = self.postprocess(actions_squashed)
         return actions_squashed, logprob_squashed
@@ -57,8 +57,8 @@ class GaussianPolicy(nn.Module):
         return action * self.action_bound
 
     def _compute_logprob(self, means, stdevs, actions):
-        logprob = -0.5 + np.log(2 * np.pi)
-        logprob += - torch.log(stdevs)
+        logprob = -0.5 * np.log(2 * np.pi)
+        logprob += - torch.log(stdevs + 1e-6)
         logprob += -0.5 * torch.square((actions - means) / stdevs)
         logprob = torch.sum(logprob, dim=1, keepdim=True)
         return logprob
@@ -95,7 +95,7 @@ class DualQNetwork(nn.Module):
 
         self.optimizer = torch.optim.Adam(params=self.parameters(), lr=lr)
 
-    def forward(self, state, action):
+    def forward(self, state, action) -> Tuple[torch.Tensor, torch.Tensor]:
         q1 = self.q1(state, action)
         q2 = self.q2(state, action)
         return q1, q2
@@ -105,6 +105,7 @@ class SoftActorCriticAgent(AgentBase):
     def __init__(self, env, max_experiences=10 ** 6,
                  min_experiences=512, update_period=4, gamma=0.99, tau=0.005, batch_size=256):
         super().__init__(env)
+
         self.max_experiences = max_experiences
         self.min_experiences = min_experiences
         self.update_period = update_period
@@ -124,18 +125,22 @@ class SoftActorCriticAgent(AgentBase):
         self.replay_buffer = SimpleReplayBuffer(maxlen=self.max_experiences)
 
         # Models
+        lr = 3e-4
         self._policy = GaussianPolicy(action_space=self.action_space,
                                       action_bound=self.scale_action,
-                                      state_space=self.state_space)
-        self._dualqnet = DualQNetwork(self.state_space, self.action_space)
-        self._target_dualqnet = DualQNetwork(self.state_space, self.action_space)
+                                      state_space=self.state_space,
+                                      lr=lr)
+        self._dualqnet = DualQNetwork(self.state_space, self.action_space, lr=lr)
+        self._target_dualqnet = DualQNetwork(self.state_space, self.action_space, lr=lr)
         self._target_dualqnet.load_state_dict(deepcopy(self._dualqnet.state_dict()))
 
         self.log_alpha = torch.tensor(0., requires_grad=True)
-        self.alpha_optimizer = torch.optim.Adam(params=[self.log_alpha], lr=3e-4)
-        self.target_entropy = -0.5 * len(self.scale_action)
+        self.alpha_optimizer = torch.optim.Adam(params=[self.log_alpha], lr=lr)
+        self.target_entropy = - len(self.scale_action)
 
         self.global_steps = 0
+        self.last_lc = None
+        self.last_la = None
 
     def _preprocess(self, observations: np.ndarray, frozen=False):
 
@@ -149,7 +154,7 @@ class SoftActorCriticAgent(AgentBase):
             observation = self._preprocess(observation, frozen=frozen)
 
             action, _ = self._policy.sample_action(np.atleast_2d(observation))
-            action = action[0]
+            action = action.detach().numpy()[0]
 
             info = {
                 "alpha": torch.exp(self.log_alpha).detach().numpy()
@@ -181,9 +186,11 @@ class SoftActorCriticAgent(AgentBase):
 
             if (len(self.replay_buffer) >= self.min_experiences
                     and self.global_steps % self.update_period == 0):
-                self.update_params()
+                self.last_lc, self.last_la = self.update_params()
 
             self.global_steps += 1
+
+        return deepcopy(self.last_lc), deepcopy(self.last_la)
 
     def update_params(self):
         # update rules of the networks and alpha
@@ -191,17 +198,17 @@ class SoftActorCriticAgent(AgentBase):
         # get numpy arrays
         states, actions, rewards, next_states, dones = self.replay_buffer.get_minibatch(self.batch_size)
 
+        # Normalize observations
+        states = self.obs_normalizer.normalize(states)
+        next_states = self.obs_normalizer.normalize(next_states)
+
+        states = torch.tensor(states, dtype=torch.float32)
+        actions = torch.tensor(actions, dtype=torch.float32)
+        next_states = torch.tensor(next_states, dtype=torch.float32)
+        rewards = torch.tensor(rewards, dtype=torch.float32)
+        dones = torch.tensor(dones, dtype=torch.int8)
+
         with torch.no_grad():
-            # Normalize observations
-            states = self.obs_normalizer.normalize(states)
-            next_states = self.obs_normalizer.normalize(next_states)
-
-            states = torch.tensor(states, dtype=torch.float32)
-            actions = torch.tensor(actions, dtype=torch.float32)
-            next_states = torch.tensor(next_states, dtype=torch.float32)
-            rewards = torch.tensor(rewards, dtype=torch.float32)
-            dones = torch.tensor(dones, dtype=torch.int8)
-
             # Get alpha
             alpha = torch.exp(self.log_alpha)
 
@@ -216,31 +223,31 @@ class SoftActorCriticAgent(AgentBase):
 
         # Value Loss Optimization
         q1, q2 = self._dualqnet(states, actions)
-        loss_q1 = torch.mean(torch.sum(torch.square(target - q1), -1))
-        loss_q2 = torch.mean(torch.sum(torch.square(target - q2), -1))
-        loss_q = 0.5 * (loss_q1 + loss_q2)
+        loss1 = F.mse_loss(target, q1)
+        loss2 = F.mse_loss(target, q2)
+        loss_c = 0.5 * (loss1 + loss2)
+        loss_critic = loss_c.detach().numpy()
 
         self._dualqnet.optimizer.zero_grad()
-        loss_q.backward()
+        loss_c.backward()
         self._dualqnet.optimizer.step()
 
         # Update policy
         selected_actions, logprobs = self._policy.sample_action(states)
+        q1, q2 = self._dualqnet(states, selected_actions)
+        q_min = torch.min(q1, q2)
 
-        with torch.no_grad():
-            q1, q2 = self._dualqnet(states, selected_actions)
-            q_min = torch.min(q1, q2)
-
-        loss_samples = torch.sum(q_min - alpha * logprobs, -1)
-        loss_policy = - torch.mean(loss_samples)
+        loss_p = (alpha * logprobs - q_min).mean()
+        loss_actor = loss_p.detach().numpy()
 
         self._policy.optimizer.zero_grad()
-        loss_policy.backward()
+        loss_p.backward()
         self._policy.optimizer.step()
 
         # Adjust alpha
+        alpha = torch.exp(self.log_alpha)
         entropy_diff = - logprobs.detach() - self.target_entropy
-        alpha_loss = torch.mean(torch.sum(torch.exp(self.log_alpha) * entropy_diff.detach(), -1))
+        alpha_loss = (alpha * entropy_diff.detach()).mean()
         # print(f"alpha loss before: {alpha_loss.detach()}")
 
         self.alpha_optimizer.zero_grad()
@@ -248,10 +255,10 @@ class SoftActorCriticAgent(AgentBase):
         self.alpha_optimizer.step()
 
         # Soft target update
-        target_weights_dict = self._target_dualqnet.state_dict()
-        for k, w in target_weights_dict.items():
-            w_new = (1 - self.tau) * w + self.tau * self._dualqnet.state_dict()[k]
-            w = w_new.detach()
+        for target_param, param in zip(self._target_dualqnet.parameters(), self._dualqnet.parameters()):
+            target_param.data.copy_(target_param.data * (1 - self.tau) + param.data * self.tau)
+
+        return loss_critic, loss_actor
 
     def save_model(self):
         # different from original tf implementation
@@ -259,5 +266,5 @@ class SoftActorCriticAgent(AgentBase):
             "time_stamp": datetime.now().strftime("%Y-%m-%d-%H-%M-%S"),
             "dualqnet": self._dualqnet.state_dict(),
             "target_dualqnet": self._target_dualqnet.state_dict(),
-            "policy": self.policy.state_dict(),
+            "policy": self._policy.state_dict(),
         }, f"checkpoints/model.pth")
