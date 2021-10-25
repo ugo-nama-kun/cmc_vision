@@ -203,10 +203,13 @@ class ReplayBuffer(IterableDataset):
         reward = np.zeros_like(episode["reward"][idx])
         discount = np.ones_like(episode["discount"][idx])
 
+        # compute multi-step returns
         for i in range(self._nstep):
             step_reward = episode["reward"][idx + i]
 
-            reward += discount + step_reward
+            reward += discount * step_reward
+
+            discount *= episode["discount"][idx + i] * self._discount
 
         return (obs, action, reward, discount, next_obs)
 
