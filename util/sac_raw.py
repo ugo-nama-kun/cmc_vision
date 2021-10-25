@@ -1,112 +1,136 @@
+from copy import deepcopy
+from datetime import datetime
+
 import numpy as np
 
-import tensorflow as tf
-import tensorflow.keras.layers as kl
-from keras import Sequential
-from tensorflow.keras import activations
-
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from util.base import AgentBase
-from util.util import Experience, SimpleReplayBufferPixel
+from util.util import RunningStats, SimpleReplayBufferPixel, Experience
 
 
-class Encoder(tf.keras.Model):
-    def __init__(self):
+
+class Encoder(nn.Module):
+    def __init__(self, lr):
         super(Encoder, self).__init__()
 
-        self.model = Sequential()
-        self.model.add(kl.Conv2D(32, (3, 3), strides=2, activation="relu"))
-        self.model.add(kl.Conv2D(32, (3, 3), strides=1, activation="relu"))
-        self.model.add(kl.Conv2D(32, (3, 3), strides=1, activation="relu"))
-        self.model.add(kl.Conv2D(32, (3, 3), strides=1, activation="relu"))
-        self.model.add(kl.Flatten())
-        self.model.add(kl.Dense(50, activation=activations.linear))
-        self.model.add(kl.Activation(activation=activations.tanh))
+        self.model = nn.Sequential(
+            nn.Conv2d(in_channels=9, out_channels=32, kernel_size=3, stride=2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1),
+            nn.ReLU(inplace=True),
+            nn.Flatten(),
+            nn.Linear(in_features=35 * 35 * 32, out_features=50),
+            nn.LayerNorm(50),
+            nn.Tanh()
+        )
 
-    @tf.function
-    def call(self, x):
+        self.optimizer = torch.optim.Adam(params=self.parameters(), lr=lr)
+
+    def forward(self, x):
         x = self.model(x)
         return x
 
 
-class GaussianPolicy(tf.keras.Model):
-
-    def __init__(self, action_space, lr=3e-4, eps=1e-8):
+class GaussianPolicy(nn.Module):
+    def __init__(self, action_space, action_bound, state_space, lr):
         super(GaussianPolicy, self).__init__()
-        self.eps = eps
-
         self.action_space = action_space
+        self.action_bound = action_bound
 
-        self.dense1 = kl.Dense(256, activation="relu")
-        self.dense2 = kl.Dense(256, activation="relu")
-        self.mu = kl.Dense(self.action_space, activation="tanh")
-        self.logstd = kl.Dense(self.action_space)
+        self.fc1 = nn.Linear(state_space, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.mu = nn.Linear(256, self.action_space)
+        self.logstd = nn.Linear(256, self.action_space)
 
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+        self.optimizer = torch.optim.Adam(params=self.parameters(), lr=lr)
 
-    @tf.function
-    def call(self, x):
-        x = self.dense1(x)
-        x = self.dense2(x)
-
-        mu = self.mu(x)
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        mu = torch.tanh(self.mu(x))
         logstd = self.logstd(x)
         return mu, logstd
 
-    @tf.function
     def sample_action(self, states):
+        states = self.preprocess(states)
 
-        mu, logstd = self(states)
+        mu, logstd = self.forward(states)
+        std = torch.exp(logstd)
+        noise = torch.randn_like(mu)
 
-        std = tf.math.exp(logstd)
-        normal_noise = tf.random.normal(shape=mu.shape, mean=0., stddev=1.)
-        actions = mu + std * normal_noise
+        actions = mu + std * noise
+        actions_squashed = torch.tanh(actions).detach().numpy()
 
-        logprob = self.compute_logprob(mu, std, actions)
+        logprob = self._compute_logprob(mu, std, actions)
+        # what is this process?
+        logprob_squashed = logprob - torch.sum(torch.log(1 - torch.tanh(actions)**2), dim=1, keepdim=True)
 
-        actions_squashed = tf.tanh(actions)
-        logprob_squashed = logprob - tf.reduce_sum(
-            tf.math.log(1 - tf.tanh(actions) ** 2 + self.eps), axis=1, keepdims=True)
-
+        actions_squashed = self.postprocess(actions_squashed)
         return actions_squashed, logprob_squashed
 
-    @tf.function
-    def compute_logprob(self, means, stdevs, actions):
+    def preprocess(self, states):
+        if not isinstance(states, torch.Tensor):
+            states = torch.tensor(states, dtype=torch.float32)
+        return states
+
+    def postprocess(self, action):
+        return action * self.action_bound
+
+    def _compute_logprob(self, means, stdevs, actions):
         logprob = -0.5 * np.log(2 * np.pi)
-        logprob += - tf.math.log(stdevs + self.eps)
-        logprob += - 0.5 * tf.square((actions - means) / (stdevs + self.eps))
-        logprob = tf.reduce_sum(logprob, axis=1, keepdims=True)
+        logprob += - torch.log(stdevs)
+        logprob += -0.5 * torch.square((actions - means) / stdevs)
+        logprob = torch.sum(logprob, dim=1, keepdim=True)
         return logprob
 
 
-class DualQNetwork(tf.keras.Model):
-    def __init__(self, lr=3e-4):
+class QNetwork(nn.Module):
+    def __init__(self, state_space, action_space):
+        super(QNetwork, self).__init__()
+        self.fc1 = nn.Linear(state_space + action_space, 256)
+        self.fc2 = nn.Linear(256, 256)
+        self.q = nn.Linear(256, 1)
+
+    def forward(self, state, action):
+        state, action = self.preprocess(state, action)
+        x = torch.cat([state, action], dim=1)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        q = self.q(x)
+        return q
+
+    def preprocess(self, state, action):
+        if not isinstance(state, torch.Tensor):
+            state = torch.tensor(state, dtype=torch.float32)
+        if not isinstance(action, torch.Tensor):
+            action = torch.tensor(action, dtype=torch.float32)
+        return state, action
+
+
+class DualQNetwork(nn.Module):
+    def __init__(self, state_space, action_space, lr):
         super(DualQNetwork, self).__init__()
-        self.dense_11 = kl.Dense(256, activation="relu")
-        self.dense_12 = kl.Dense(256, activation="relu")
-        self.q1 = kl.Dense(1)
+        self.q1 = QNetwork(state_space, action_space)
+        self.q2 = QNetwork(state_space, action_space)
 
-        self.dense_21 = kl.Dense(256, activation="relu")
-        self.dense_22 = kl.Dense(256, activation="relu")
-        self.q2 = kl.Dense(1)
+        self.optimizer = torch.optim.Adam(params=self.parameters(), lr=lr)
 
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
-
-    def call(self, states, actions):
-        inputs = tf.concat([states, actions], 1)
-        x1 = self.dense_11(inputs)
-        x1 = self.dense_12(x1)
-        q1 = self.q1(x1)
-
-        x2 = self.dense_21(inputs)
-        x2 = self.dense_22(x2)
-        q2 = self.q2(x2)
+    def forward(self, state, action):
+        q1 = self.q1(state, action)
+        q2 = self.q2(state, action)
         return q1, q2
 
 
 class SoftActorCriticAgentRawPixel(AgentBase):
     def __init__(self, env, max_experiences=10 ** 6,
-                 min_experiences=512, update_period=4, gamma=0.99, tau=0.005, batch_size=256):
+                 min_experiences=512, update_period=4, gamma=0.99, tau=0.005, batch_size=256, lr=1e-4):
         super().__init__(env)
         self.max_experiences = max_experiences
         self.min_experiences = min_experiences
@@ -116,73 +140,62 @@ class SoftActorCriticAgentRawPixel(AgentBase):
         self.batch_size = batch_size
 
         # Initialize State-Action Scaler
+        dummy_obs = env.reset()
+        self.obs_normalizer = RunningStats(shape=dummy_obs.shape)
         self.scale_action = (env.action_space.high - env.action_space.low) / 2.
+        self.scale_action = self.scale_action.astype(np.float32)
+
+        self.action_space = len(self.scale_action)
+        self.state_space = len(dummy_obs)
 
         self.replay_buffer = SimpleReplayBufferPixel(maxlen=self.max_experiences)
 
         # Models
-        self._encoder = Encoder()
-        self._policy = GaussianPolicy(action_space=len(self.scale_action))
-        self._dualqnet = DualQNetwork()
-        self._target_dualqnet = DualQNetwork()
+        self._encoder = Encoder(lr=lr)
+        self._policy = GaussianPolicy(action_space=self.action_space,
+                                      action_bound=self.scale_action,
+                                      state_space=self.state_space,
+                                      lr=lr)
+        self._dualqnet = DualQNetwork(self.state_space, self.action_space, lr)
+        self._target_dualqnet = DualQNetwork(self.state_space, self.action_space, lr)
+        self._target_dualqnet.load_state_dict(deepcopy(self._dualqnet.state_dict()))
 
-        self.log_alpha = tf.Variable(0.)
-        self.alpha_optimizer = tf.keras.optimizers.Adam(3e-4)
+        self.log_alpha = torch.tensor(0., requires_grad=True)
+        self.alpha_optimizer = torch.optim.Adam(params=[self.log_alpha], lr=3e-4)
         self.target_entropy = -0.5 * len(self.scale_action)
 
         self.global_steps = 0
 
-        self._init(env)
+    def _preprocess(self, observations: np.ndarray, frozen=False):
 
-    def _init(self, env):
-        dummy_obs = env.reset()
-        dummy_obs = (dummy_obs[np.newaxis, ...]).astype(np.float32)
+        if not frozen:
+            self.obs_normalizer.update(observations)
 
-        dummy_action = env.action_space.sample()
-        dummy_action = (dummy_action[np.newaxis, ...]).astype(np.float32)
+        return self.obs_normalizer.normalize(observations)
 
-        # Initialize network shapes by a run
-        latent = self._encoder(dummy_obs)
-        self._policy(latent)
-        self._dualqnet(latent, dummy_action)
-        self._target_dualqnet(latent, dummy_action)
-        self._target_dualqnet.set_weights(self._dualqnet.get_weights())
+    def sample_action(self, observation: np.ndarray, frozen=False):
+        with torch.no_grad():
+            observation = self._preprocess(observation, frozen=frozen)
 
-    def _preprocess(self, observations, frozen=False):
-        return observations / 255.
+            action, _ = self._policy.sample_action(np.atleast_2d(observation))
+            action = action[0]
 
-    def sample_action(self, observation, frozen=False):
-
-        observation = self._preprocess(observation, frozen=frozen)
-
-        if len(observation.shape) < 4:
-            observation = np.expand_dims(observation, axis=0)
-
-        assert len(observation.shape) == 4
-
-        latent = self._encoder((observation))
-        action, _ = self._policy.sample_action(latent)
-        action = action.numpy()[0]
-
-        info = {
-            "alpha": tf.exp(self.log_alpha).numpy()
-        }
+            info = {
+                "alpha": torch.exp(self.log_alpha).detach().numpy()
+            }
 
         return self._postprocess(action), info
 
-    def sample_actions(self, observations, frozen=False):
+    def sample_actions(self, observations: np.ndarray, frozen=False):
+        with torch.no_grad():
 
-        observations = self._preprocess(observations, frozen=frozen)
+            observations = self._preprocess(observations, frozen=frozen)
 
-        assert len(observations.shape) == 4
+            actions, _ = self._policy.sample_action(np.atleast_2d(observations))
 
-        latents = self._encoder(np.atleast_2d(observations))
-        actions, _ = self._policy.sample_action(latents)
-        actions = actions.numpy()
-
-        info = {
-            "alpha": tf.exp(self.log_alpha).numpy()
-        }
+            info = {
+                "alpha": torch.exp(self.log_alpha).detach().numpy()
+            }
 
         return self._postprocess(actions), info
 
@@ -204,59 +217,81 @@ class SoftActorCriticAgentRawPixel(AgentBase):
     def update_params(self):
         # update rules of the networks and alpha
 
+        # get numpy arrays
         obss, actions, rewards, next_obss, dones = self.replay_buffer.get_minibatch(self.batch_size)
 
-        # Get alpha
-        alpha = tf.math.exp(self.log_alpha)
+        with torch.no_grad():
+            # Normalize observations
+            obss = self.obs_normalizer.normalize(obss)
+            next_obss = self.obs_normalizer.normalize(next_obss)
 
-        # Update Q function
-        next_latents = self._encoder(next_obss)
-        next_actions, next_logprobs = self._policy.sample_action(next_latents)
+            obss = torch.tensor(obss, dtype=torch.float32)
+            actions = torch.tensor(actions, dtype=torch.float32)
+            next_obss = torch.tensor(next_obss, dtype=torch.float32)
+            rewards = torch.tensor(rewards, dtype=torch.float32)
+            dones = torch.tensor(dones, dtype=torch.int8)
 
-        target_q1, target_q2 = self._target_dualqnet(next_latents, next_actions)
+            # Get alpha
+            alpha = torch.exp(self.log_alpha)
 
-        target = rewards + (1 - dones) * self.gamma * (
-                tf.minimum(target_q1, target_q2) + -1 * alpha * next_logprobs
-        )
-        with tf.GradientTape() as tape:
-            latents = self._encoder(obss)
-            q1, q2 = self._dualqnet(latents, actions)
-            loss_1 = tf.reduce_mean(tf.square(target - q1))
-            loss_2 = tf.reduce_mean(tf.square(target - q2))
-            loss = 0.5 * loss_1 + 0.5 * loss_2
+            # Get latents
+            next_latents = self._encoder(next_obss)
 
-        variables = self._dualqnet.trainable_variables
-        grads = tape.gradient(loss, variables)
-        self._dualqnet.optimizer.apply_gradients(zip(grads, variables))
+            # Update Q function
+            next_actions, next_logprobs = self._policy.sample_action(next_latents)
+
+            target_q1, target_q2 = self._target_dualqnet(next_latents, next_actions)
+
+            min_q = torch.min(target_q1, target_q2)
+
+            target = rewards + (1 - dones) * self.gamma * (min_q - alpha * next_logprobs)
+
+        # Value Loss Optimization
+        latents = self._encoder(obss)
+        q1, q2 = self._dualqnet(latents, actions)
+        loss_q1 = torch.mean(torch.sum(torch.square(target - q1), -1))
+        loss_q2 = torch.mean(torch.sum(torch.square(target - q2), -1))
+        loss_q = 0.5 * (loss_q1 + loss_q2)
+
+        self._dualqnet.optimizer.zero_grad()
+        loss_q.backward()
+        self._dualqnet.optimizer.step()
 
         # Update policy
-        latents = self._encoder(obss)  # redundant?
-        with tf.GradientTape() as tape:
-            selected_actions, logprobs = self._policy.sample_action(latents)
-            q1, q2 = self._dualqnet(latents, selected_actions)
-            q_min = tf.minimum(q1, q2)
-            loss = -1 * tf.reduce_mean(q_min + -1 * alpha * logprobs)
+        latents = latents.detach()
+        selected_actions, logprobs = self._policy.sample_action(latents)
 
-        variables = self._policy.trainable_variables
-        grads = tape.gradient(loss, variables)
-        self._policy.optimizer.apply_gradients(zip(grads, variables))
+        q1, q2 = self._dualqnet(latents, selected_actions)
+        q_min = torch.min(q1, q2)
+
+        loss_samples = torch.sum(alpha * logprobs - q_min, -1)
+        loss_policy = torch.mean(loss_samples)
+
+        self._policy.optimizer.zero_grad()
+        loss_policy.backward()
+        self._policy.optimizer.step()
 
         # Adjust alpha
-        entropy_diff = -1 * logprobs - self.target_entropy
-        with tf.GradientTape() as tape:
-            tape.watch(self.log_alpha)
-            alpha_loss = tf.reduce_mean(tf.exp(self.log_alpha) * entropy_diff)
+        entropy_diff = - logprobs.detach() - self.target_entropy
+        alpha_loss = torch.mean(torch.sum(torch.exp(self.log_alpha) * entropy_diff.detach(), -1))
+        # print(f"alpha loss before: {alpha_loss.detach()}")
 
-        grad = tape.gradient(alpha_loss, self.log_alpha)
-        self.alpha_optimizer.apply_gradients([(grad, self.log_alpha)])
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
 
         # Soft target update
-        self._target_dualqnet.set_weights(
-            (1 - self.tau) * np.array(self._target_dualqnet.get_weights(), dtype="object")
-            + self.tau * np.array(self._dualqnet.get_weights(), dtype="object")
-        )
+        target_weights_dict = self._target_dualqnet.state_dict()
+        for k, w in target_weights_dict.items():
+            w_new = (1 - self.tau) * w + self.tau * self._dualqnet.state_dict()[k]
+            w = w_new.detach()
 
-
-
-
-
+    def save_model(self):
+        # different from original tf implementation
+        torch.save({
+            "time_stamp": datetime.now().strftime("%Y-%m-%d-%H-%M-%S"),
+            "encoder": self._encoder.state_dict(),
+            "dualqnet": self._dualqnet.state_dict(),
+            "target_dualqnet": self._target_dualqnet.state_dict(),
+            "policy": self._policy.state_dict(),
+        }, f"checkpoints/model.pth")

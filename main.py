@@ -2,7 +2,6 @@ from datetime import datetime
 import argparse
 
 import wandb
-import tensorflow as tf
 
 from dm_control import suite
 
@@ -17,6 +16,7 @@ parser.add_argument("agent_type", help="agent type: [lowdim, raw_pixel]", type=s
 parser.add_argument("--gpu", help="GPU ID if available", default=0, type=int)
 parser.add_argument("--domain", help="environment (domain) name, like cartpole", default="cartpole", type=str)
 parser.add_argument("--task", help="task option, like balance", default="balance", type=str)
+parser.add_argument("--record", action='store_true')
 """ domain-task names
 acrobot swingup
 acrobot swingup_sparse
@@ -56,7 +56,7 @@ gpu_id = 0
 
 # Experiment Params
 n_steps = 10 ** 6
-evaluate_every = 3000
+evaluate_every = 1000
 n_test = 5
 
 env_id = [args.domain, args.task]
@@ -64,12 +64,12 @@ env_id = [args.domain, args.task]
 config_experiment = {
     "env": env_id,
     "algo": "sac-fnn",
-    "max_experience": 10 ** 5,
+    "max_experience": 10 ** 6,
     "min_experiences": 1000,
-    "update_period": 2,
+    "update_period": 1,
     "gamma": 0.99,
-    "tau": 0.01,
-    "batch_size": 512,
+    "tau": 0.005,
+    "batch_size": 256,
 }
 
 running_name = None
@@ -88,22 +88,22 @@ if running_name is None:
 # Main content
 #########################################
 
-available_gpus = tf.config.experimental.list_physical_devices('GPU')
-print("Num GPUs Available: ", len(available_gpus))
-if available_gpus:
-    try:
-        tf.config.experimental.set_visible_devices(available_gpus[gpu_id], "GPU")
-        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-        print(len(available_gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
-    except RuntimeError as e:
-        print(e)
+# available_gpus = tf.config.experimental.list_physical_devices('GPU')
+# print("Num GPUs Available: ", len(available_gpus))
+# if available_gpus:
+#     try:
+#         tf.config.experimental.set_visible_devices(available_gpus[gpu_id], "GPU")
+#         logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+#         print(len(available_gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+#     except RuntimeError as e:
+#         print(e)
 
 project_name = 'cmc_dmc_vision'
 entity = 'ugo-nama-kun'
 
 wandb.init(project=project_name,
            entity=entity,
-           group=config_experiment["env"][0],
+           group=env_id[0] + "-" + env_id[1],
            name=running_name)
 config = wandb.config
 config.update(config)
@@ -139,6 +139,6 @@ elif agent_type == "raw_pixel":
 else:
     raise ValueError("invalid agent type")
 
-training(agent, env, test_env, n_steps=n_steps, evaluate_every=evaluate_every, n_test=n_test)
+training(agent, env, test_env, n_steps=n_steps, evaluate_every=evaluate_every, n_test=n_test, record=args.record)
 
 print("done.")
